@@ -472,6 +472,7 @@ SCRIPT_BLOCK = """
     ctx.strokeStyle = "rgba(21, 32, 27, 0.10)";
     ctx.fillStyle = "#55635b";
     ctx.lineWidth = 1;
+    ctx.textAlign = "left";
 
     for (let index = 0; index <= ticks; index += 1) {
       const ratio = index / ticks;
@@ -510,9 +511,11 @@ SCRIPT_BLOCK = """
         ? padding.left + chartWidth / 2
         : padding.left + (chartWidth * index) / (labels.length - 1);
 
+      const safeX = Math.min(Math.max(x, padding.left), width - padding.right);
       ctx.save();
-      ctx.translate(x, bottom);
+      ctx.translate(safeX, bottom);
       ctx.rotate(-0.45);
+      ctx.textAlign = index === labels.length - 1 ? "right" : "left";
       ctx.fillText(truncateLabel(label, 12), 0, 0);
       ctx.restore();
     });
@@ -520,7 +523,7 @@ SCRIPT_BLOCK = """
 
   function drawLineChart(canvas, config) {
     const { ctx, width, height } = setupCanvas(canvas);
-    const padding = { top: 16, right: 16, bottom: 58, left: 58 };
+    const padding = { top: 16, right: 48, bottom: 64, left: 58 };
     const chartWidth = width - padding.left - padding.right;
     const chartHeight = height - padding.top - padding.bottom;
     const maxY = getMaxValue(config.series);
@@ -567,7 +570,7 @@ SCRIPT_BLOCK = """
 
   function drawBarChart(canvas, config) {
     const { ctx, width, height } = setupCanvas(canvas);
-    const padding = { top: 16, right: 16, bottom: 72, left: 58 };
+    const padding = { top: 16, right: 48, bottom: 84, left: 58 };
     const labels = config.labels || [];
     const series = config.series || [];
     const chartWidth = width - padding.left - padding.right;
@@ -594,10 +597,12 @@ SCRIPT_BLOCK = """
       });
 
       const labelX = padding.left + labelIndex * groupWidth + groupWidth / 2;
+      const safeLabelX = Math.min(Math.max(labelX, padding.left), width - padding.right);
       ctx.save();
-      ctx.translate(labelX, height - padding.bottom + 18);
+      ctx.translate(safeLabelX, height - padding.bottom + 18);
       ctx.rotate(-0.55);
       ctx.fillStyle = "#55635b";
+      ctx.textAlign = labelIndex === labels.length - 1 ? "right" : "left";
       ctx.fillText(truncateLabel(label, 12), 0, 0);
       ctx.restore();
     });
@@ -987,6 +992,43 @@ def render_model_info_page(service: RecommendationService) -> str:
         ]
         for model_name, values in metrics.items()
     ]
+    feature_influence = payload.get("feature_influence", {})
+
+    def render_influence_chart(target_key: str, title: str, color: str) -> str:
+        target_payload = feature_influence.get(target_key, {})
+        items = target_payload.get("items", [])[:15]
+        if not items:
+            return ""
+
+        return render_chart_card(
+            chart_id=f"{target_key}-feature-influence",
+            title=title,
+            description=f"{target_payload.get('method', 'feature_importance')}: {target_payload.get('model_name', '')}",
+            chart_type="bar",
+            labels=[str(item.get("feature", "")) for item in items],
+            series=[
+                {
+                    "name": "importance",
+                    "values": [float(item.get("importance", 0.0)) for item in items],
+                    "color": color,
+                }
+            ],
+            chart_height=330,
+        )
+
+    influence_charts = "".join(
+        [
+            render_influence_chart("cpu", "Влияние признаков на прогноз CPU", "#1f7a5c"),
+            render_influence_chart("ram", "Влияние признаков на прогноз RAM", "#c04d7b"),
+        ]
+    )
+    influence_section = ""
+    if influence_charts:
+        influence_section = f"""
+        <section class="chart-grid">
+          {influence_charts}
+        </section>
+        """
 
     body = f"""
     {render_cards([
@@ -1013,6 +1055,9 @@ def render_model_info_page(service: RecommendationService) -> str:
       </div>
     </section>
     """
+
+    if influence_section:
+        body += influence_section
 
     return render_layout(
         service=service,
@@ -1069,8 +1114,8 @@ def render_history_page(service: RecommendationService, limit: int, container_id
     )
 
 
-def render_data_page(service: RecommendationService, container_id: str | None, limit: int) -> str:
-    payload = service.data_overview(container_id=container_id, limit=limit)
+def render_data_page(service: RecommendationService, container_id: str | None, app_du: str | None, limit: int) -> str:
+    payload = service.data_overview(container_id=container_id, app_du=app_du, limit=limit)
     summary = payload["summary"]
 
     cpu_rows = [
@@ -1213,6 +1258,7 @@ def render_data_page(service: RecommendationService, container_id: str | None, l
 
     bootstrap_rows = [
         [
+            row.get("app_du", "unknown"),
             row["container_id"],
             row["decision_label"],
             row["recommended_cpu_limit"],
@@ -1382,7 +1428,7 @@ def render_data_page(service: RecommendationService, container_id: str | None, l
         как сервис формирует итоговые решения.
       </p>
       {render_table(
-          ["container_id", "decision", "recommended_cpu_limit", "recommended_mem_size", "cpu_action", "ram_action"],
+          ["app_du", "container_id", "decision", "recommended_cpu_limit", "recommended_mem_size", "cpu_action", "ram_action"],
           bootstrap_rows,
           empty_text="Предварительных рекомендаций пока нет"
       )}
@@ -1524,13 +1570,14 @@ def recommendations_history(
 def data(
     request: Request,
     container_id: str | None = Query(default=None),
+    app_du: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=1000),
     format: str | None = Query(default=None, pattern="^(html|json)$"),
 ) -> HTMLResponse | dict[str, Any]:
     service = get_service(app)
     try:
         if wants_html(request, format):
-            return HTMLResponse(render_data_page(service, container_id=container_id, limit=limit))
-        return service.data_overview(container_id=container_id, limit=limit)
+            return HTMLResponse(render_data_page(service, container_id=container_id, app_du=app_du, limit=limit))
+        return service.data_overview(container_id=container_id, app_du=app_du, limit=limit)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error

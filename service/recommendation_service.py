@@ -44,6 +44,7 @@ class RecommendationService:
             "metrics": self.artifacts.metadata["metrics"],
             "best_params": self.artifacts.metadata["best_params"],
             "training_split": self.artifacts.metadata["training_split"],
+            "feature_influence": self.artifacts.metadata.get("feature_influence", {}),
         }
 
     def recommend(
@@ -65,6 +66,7 @@ class RecommendationService:
         history_record = {
             "request_id": response["request_id"],
             "processed_at": response["processed_at"],
+            "app_du": response["app_du"],
             "container_id": response["container_id"],
             "machine_id": response["machine_id"],
             "time_window": response["time_window"],
@@ -85,9 +87,11 @@ class RecommendationService:
             "count": self.history_store.count(),
         }
 
-    def data_overview(self, container_id: str | None = None, limit: int = 200) -> dict[str, Any]:
+    def data_overview(self, container_id: str | None = None, app_du: str | None = None, limit: int = 200) -> dict[str, Any]:
         window_df = self.artifacts.window_df.copy()
         meta_df = self.artifacts.meta_df.copy()
+        if "app_du" not in window_df.columns:
+            window_df["app_du"] = "unknown"
 
         window_df["cpu_usage_absolute"] = (window_df["cpu_util_mean"] / 100.0) * window_df["cpu_limit"]
         window_df["mem_usage_absolute"] = (window_df["mem_util_mean"] / 100.0) * window_df["mem_size"]
@@ -95,8 +99,8 @@ class RecommendationService:
         app_container_counts = (
             meta_df[["container_id", "app_du"]]
             .drop_duplicates()
-            .groupby("app_du")["container_id"]
-            .nunique()
+            .groupby("app_du")
+            .size()
             .sort_values(ascending=False)
             .head(20)
             .reset_index(name="container_count")
@@ -168,18 +172,17 @@ class RecommendationService:
         }
 
         if container_id:
-            container_frame = (
-                window_df[window_df["container_id"] == container_id]
-                .sort_values("time_window")
-                .tail(limit)
-                .copy()
-            )
+            container_frame = window_df[window_df["container_id"] == container_id].copy()
+            if app_du:
+                container_frame = container_frame[container_frame["app_du"] == app_du].copy()
+            container_frame = container_frame.sort_values(["app_du", "container_id", "time_window"]).tail(limit).copy()
             if container_frame.empty:
                 raise ValueError(f"Контейнер '{container_id}' не найден в базовом наборе данных.")
 
             payload["container_series"] = dataframe_to_records(
                 container_frame[
                     [
+                        "app_du",
                         "container_id",
                         "machine_id",
                         "time_window",

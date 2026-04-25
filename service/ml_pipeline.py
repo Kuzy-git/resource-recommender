@@ -115,6 +115,17 @@ SEQ_COLS = [
     "relative_day_cycle",
 ]
 
+ENTITY_COLS = ["app_du", "container_id"]
+REPORT_KEY_COLS = ["app_du", "container_id", "time_window"]
+
+
+def _entity_cols(frame: pd.DataFrame) -> list[str]:
+    return [column for column in ENTITY_COLS if column in frame.columns]
+
+
+def _sort_cols(frame: pd.DataFrame) -> list[str]:
+    return _entity_cols(frame) + ["time_window"]
+
 
 @dataclass
 class LoadedArtifacts:
@@ -179,7 +190,7 @@ def _ensure_dirs() -> None:
 def clean_meta_frame(meta: pd.DataFrame) -> pd.DataFrame:
     frame = meta.copy()
     frame = frame.dropna(subset=["container_id", "machine_id", "time_stamp", "cpu_request", "cpu_limit", "mem_size"]).copy()
-    frame = frame.drop_duplicates(subset=["container_id", "machine_id", "time_stamp", "cpu_request", "cpu_limit", "mem_size"])
+    frame = frame.drop_duplicates(subset=["container_id", "machine_id", "time_stamp", "app_du", "cpu_request", "cpu_limit", "mem_size"])
     frame = frame[(frame["cpu_request"] > 0) & (frame["cpu_limit"] > 0) & (frame["mem_size"] > 0)].copy()
     frame["time_stamp"] = pd.to_numeric(frame["time_stamp"], errors="coerce")
     frame = frame.dropna(subset=["time_stamp"]).copy()
@@ -215,11 +226,15 @@ def read_training_data(config: PipelineConfig = DEFAULT_CONFIG) -> tuple[pd.Data
 
 def aggregate_usage_to_windows(raw_df: pd.DataFrame, config: PipelineConfig = DEFAULT_CONFIG) -> pd.DataFrame:
     frame = raw_df.copy()
+    if "app_du" not in frame.columns:
+        frame["app_du"] = "unknown"
+    frame["app_du"] = frame["app_du"].fillna("unknown").astype(str)
+
     horizon_seconds = config.horizon_minutes * 60
     frame["time_window"] = (frame["time_stamp"] // horizon_seconds) * horizon_seconds
 
     window_df = (
-        frame.groupby(["container_id", "time_window"], as_index=False)
+        frame.groupby(["app_du", "container_id", "time_window"], as_index=False)
         .agg(
             machine_id=("machine_id", "last"),
             cpu_util_mean=("cpu_util_percent", "mean"),
@@ -237,7 +252,7 @@ def aggregate_usage_to_windows(raw_df: pd.DataFrame, config: PipelineConfig = DE
 
     window_df["cpu_util_std"] = window_df["cpu_util_std"].fillna(0)
     window_df["mem_util_std"] = window_df["mem_util_std"].fillna(0)
-    return window_df.sort_values(["container_id", "time_window"]).reset_index(drop=True)
+    return window_df.sort_values(["app_du", "container_id", "time_window"]).reset_index(drop=True)
 
 
 def enrich_window_features(
@@ -245,36 +260,41 @@ def enrich_window_features(
     config: PipelineConfig = DEFAULT_CONFIG,
     include_targets: bool = True,
 ) -> pd.DataFrame:
-    frame = window_df.copy().sort_values(["container_id", "time_window"]).reset_index(drop=True)
+    frame = window_df.copy()
+    if "app_du" not in frame.columns:
+        frame["app_du"] = "unknown"
+
+    group_cols = _entity_cols(frame)
+    frame = frame.sort_values(group_cols + ["time_window"]).reset_index(drop=True)
 
     frame["relative_hour"] = ((frame["time_window"] // 3600) % 24).astype(int)
     frame["relative_day_cycle"] = ((frame["time_window"] // 86400) % 7).astype(int)
 
     for idx in range(1, config.lags + 1):
-        frame[f"cpu_lag_{idx}"] = frame.groupby("container_id")["cpu_util_mean"].shift(idx)
-        frame[f"mem_lag_{idx}"] = frame.groupby("container_id")["mem_util_mean"].shift(idx)
+        frame[f"cpu_lag_{idx}"] = frame.groupby(group_cols)["cpu_util_mean"].shift(idx)
+        frame[f"mem_lag_{idx}"] = frame.groupby(group_cols)["mem_util_mean"].shift(idx)
 
-    frame["cpu_roll_mean_3"] = frame.groupby("container_id")["cpu_util_mean"].transform(
+    frame["cpu_roll_mean_3"] = frame.groupby(group_cols)["cpu_util_mean"].transform(
         lambda series: series.shift(1).rolling(3, min_periods=1).mean()
     )
-    frame["mem_roll_mean_3"] = frame.groupby("container_id")["mem_util_mean"].transform(
+    frame["mem_roll_mean_3"] = frame.groupby(group_cols)["mem_util_mean"].transform(
         lambda series: series.shift(1).rolling(3, min_periods=1).mean()
     )
-    frame["cpu_roll_std_3"] = frame.groupby("container_id")["cpu_util_mean"].transform(
+    frame["cpu_roll_std_3"] = frame.groupby(group_cols)["cpu_util_mean"].transform(
         lambda series: series.shift(1).rolling(3, min_periods=1).std()
     )
-    frame["mem_roll_std_3"] = frame.groupby("container_id")["mem_util_mean"].transform(
+    frame["mem_roll_std_3"] = frame.groupby(group_cols)["mem_util_mean"].transform(
         lambda series: series.shift(1).rolling(3, min_periods=1).std()
     )
-    frame["cpu_delta_1"] = frame.groupby("container_id")["cpu_util_mean"].transform(lambda series: series.diff().shift(1))
-    frame["mem_delta_1"] = frame.groupby("container_id")["mem_util_mean"].transform(lambda series: series.diff().shift(1))
+    frame["cpu_delta_1"] = frame.groupby(group_cols)["cpu_util_mean"].transform(lambda series: series.diff().shift(1))
+    frame["mem_delta_1"] = frame.groupby(group_cols)["mem_util_mean"].transform(lambda series: series.diff().shift(1))
     frame["cpu_request_limit_ratio"] = frame["cpu_request"] / frame["cpu_limit"]
     frame["cpu_limit_mem_ratio"] = frame["cpu_limit"] / frame["mem_size"]
     frame["cpu_request_mem_ratio"] = frame["cpu_request"] / frame["mem_size"]
 
     if include_targets:
-        frame["cpu_target"] = frame.groupby("container_id")["cpu_util_mean"].shift(-1)
-        frame["mem_target"] = frame.groupby("container_id")["mem_util_mean"].shift(-1)
+        frame["cpu_target"] = frame.groupby(group_cols)["cpu_util_mean"].shift(-1)
+        frame["mem_target"] = frame.groupby(group_cols)["mem_util_mean"].shift(-1)
 
     return frame.replace([np.inf, -np.inf], np.nan)
 
@@ -284,7 +304,7 @@ def build_window_frame(
     usage: pd.DataFrame,
     config: PipelineConfig = DEFAULT_CONFIG,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    meta_for_merge = meta[["container_id", "machine_id", "time_stamp", "cpu_request", "cpu_limit", "mem_size"]].copy()
+    meta_for_merge = meta[["container_id", "machine_id", "time_stamp", "app_du", "cpu_request", "cpu_limit", "mem_size"]].copy()
     meta_for_merge = meta_for_merge.sort_values(["time_stamp", "container_id", "machine_id"]).reset_index(drop=True)
     usage_for_merge = usage.sort_values(["time_stamp", "container_id", "machine_id"]).reset_index(drop=True)
 
@@ -297,7 +317,8 @@ def build_window_frame(
     )
 
     df_raw = df_raw.dropna(subset=["cpu_request", "cpu_limit", "mem_size"]).copy()
-    df_raw = df_raw.sort_values(["container_id", "time_stamp"]).reset_index(drop=True)
+    df_raw["app_du"] = df_raw["app_du"].fillna("unknown").astype(str)
+    df_raw = df_raw.sort_values(["app_du", "container_id", "time_stamp"]).reset_index(drop=True)
 
     window_df = aggregate_usage_to_windows(df_raw, config=config)
     window_df = enrich_window_features(window_df, config=config, include_targets=True)
@@ -305,22 +326,24 @@ def build_window_frame(
 
 
 def build_model_frame(window_df: pd.DataFrame) -> pd.DataFrame:
-    frame = window_df[["container_id", "machine_id", "time_window"] + FEATURE_COLS + ["cpu_target", "mem_target"]].copy()
+    id_cols = [column for column in ["app_du", "container_id", "machine_id", "time_window"] if column in window_df.columns]
+    frame = window_df[id_cols + FEATURE_COLS + ["cpu_target", "mem_target"]].copy()
     frame = frame.dropna(subset=FEATURE_COLS + ["cpu_target", "mem_target"]).copy()
-    frame = frame.sort_values(["time_window", "container_id"]).reset_index(drop=True)
+    frame = frame.sort_values([column for column in ["time_window", "app_du", "container_id"] if column in frame.columns]).reset_index(drop=True)
     frame["row_id"] = np.arange(len(frame))
     return frame
 
 
 def build_sequences(frame: pd.DataFrame, seq_cols: list[str], lookback_value: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    ordered = frame.sort_values(["container_id", "time_window"]).reset_index(drop=True)
+    group_cols = _entity_cols(frame)
+    ordered = frame.sort_values(group_cols + ["time_window"]).reset_index(drop=True)
 
     x_seq: list[np.ndarray] = []
     y_cpu: list[float] = []
     y_mem: list[float] = []
     row_ids: list[int] = []
 
-    for _, group in ordered.groupby("container_id", sort=False):
+    for _, group in ordered.groupby(group_cols, sort=False):
         values = group[seq_cols].to_numpy(dtype=np.float32)
         cpu_targets = group["cpu_target"].to_numpy(dtype=np.float32)
         mem_targets = group["mem_target"].to_numpy(dtype=np.float32)
@@ -345,17 +368,19 @@ def build_sequences(frame: pd.DataFrame, seq_cols: list[str], lookback_value: in
 
 
 def build_latest_sequences(frame: pd.DataFrame, seq_cols: list[str], lookback_value: int) -> tuple[np.ndarray, pd.DataFrame]:
-    ordered = frame.sort_values(["container_id", "time_window"]).reset_index(drop=True)
+    group_cols = _entity_cols(frame)
+    ordered = frame.sort_values(group_cols + ["time_window"]).reset_index(drop=True)
 
     sequences: list[np.ndarray] = []
     rows: list[dict[str, Any]] = []
 
-    for _, group in ordered.groupby("container_id", sort=False):
+    for _, group in ordered.groupby(group_cols, sort=False):
         if len(group) < lookback_value:
             continue
 
         sequence = group[seq_cols].tail(lookback_value).to_numpy(dtype=np.float32)
-        last_row = group.iloc[-1][["container_id", "time_window", "cpu_request", "cpu_limit", "mem_size"]].to_dict()
+        row_cols = [column for column in REPORT_KEY_COLS + ["cpu_request", "cpu_limit", "mem_size"] if column in group.columns]
+        last_row = group.iloc[-1][row_cols].to_dict()
         sequences.append(sequence)
         rows.append(last_row)
 
@@ -436,6 +461,121 @@ def _fit_final_model(
 
     model.fit(x_full_scaled_df, target_values)
     return model
+
+
+def _importance_items(feature_names: list[str], values: np.ndarray, top_n: int = 20) -> list[dict[str, float | str]]:
+    scores = np.nan_to_num(np.abs(np.asarray(values, dtype=float)), nan=0.0, posinf=0.0, neginf=0.0)
+    if scores.size == 0 or float(scores.sum()) <= 0:
+        return []
+
+    order = np.argsort(scores)[::-1][:top_n]
+    total = float(scores.sum())
+    return [
+        {
+            "feature": str(feature_names[index]),
+            "importance": float(scores[index] / total),
+            "raw_importance": float(scores[index]),
+        }
+        for index in order
+    ]
+
+
+def _tabular_feature_influence(
+    model_name: str,
+    model: Any,
+    feature_names: list[str],
+    x_tabular_scaled_df: pd.DataFrame,
+    sample_size: int = 4096,
+) -> tuple[list[dict[str, float | str]], str]:
+    if not x_tabular_scaled_df.empty:
+        sample_count = min(sample_size, len(x_tabular_scaled_df))
+        sample_indices = np.linspace(0, len(x_tabular_scaled_df) - 1, sample_count, dtype=int)
+        x_sample = x_tabular_scaled_df.iloc[sample_indices]
+
+        try:
+            if model_name == "LightGBM":
+                contributions = np.asarray(model.predict(x_sample, pred_contrib=True), dtype=float)
+                return _importance_items(feature_names, np.mean(np.abs(contributions[:, : len(feature_names)]), axis=0)), "mean_abs_shap_values"
+
+            if model_name == "XGBoost":
+                dmatrix = xgb.DMatrix(x_sample, feature_names=feature_names)
+                contributions = np.asarray(model.get_booster().predict(dmatrix, pred_contribs=True), dtype=float)
+                return _importance_items(feature_names, np.mean(np.abs(contributions[:, : len(feature_names)]), axis=0)), "mean_abs_shap_values"
+        except Exception:
+            pass
+
+    if hasattr(model, "feature_importances_"):
+        return _importance_items(feature_names, np.asarray(model.feature_importances_, dtype=float)), "model_feature_importance"
+
+    if hasattr(model, "coef_"):
+        return _importance_items(feature_names, np.asarray(model.coef_, dtype=float).reshape(-1)), "absolute_coefficients"
+
+    return [], "not_available"
+
+
+def _sequence_permutation_influence(
+    model: Any,
+    x_seq: np.ndarray,
+    target_values: np.ndarray,
+    feature_names: list[str],
+    sample_size: int = 2048,
+    seed: int = 42,
+) -> list[dict[str, float | str]]:
+    if x_seq.size == 0 or len(x_seq) == 0:
+        return []
+
+    rng = np.random.default_rng(seed)
+    sample_count = min(sample_size, len(x_seq))
+    sample_indices = np.linspace(0, len(x_seq) - 1, sample_count, dtype=int)
+    x_sample = x_seq[sample_indices].copy()
+    y_sample = np.asarray(target_values, dtype=float)[sample_indices]
+
+    baseline_pred = model.predict(x_sample, verbose=0).reshape(-1)
+    baseline_mae = mean_absolute_error(y_sample, baseline_pred)
+    importances: list[float] = []
+
+    for feature_index in range(x_sample.shape[-1]):
+        x_permuted = x_sample.copy()
+        flat_values = x_permuted[:, :, feature_index].reshape(-1).copy()
+        rng.shuffle(flat_values)
+        x_permuted[:, :, feature_index] = flat_values.reshape(x_permuted[:, :, feature_index].shape)
+        permuted_pred = model.predict(x_permuted, verbose=0).reshape(-1)
+        permuted_mae = mean_absolute_error(y_sample, permuted_pred)
+        importances.append(max(float(permuted_mae - baseline_mae), 0.0))
+
+    return _importance_items(feature_names, np.asarray(importances, dtype=float))
+
+
+def _model_feature_influence(
+    model_name: str,
+    model: Any,
+    x_tabular_scaled_df: pd.DataFrame,
+    x_seq_scaled: np.ndarray,
+    target_values: np.ndarray,
+    target_name: str,
+    seed: int,
+) -> dict[str, Any]:
+    if model_name == "LSTM":
+        items = _sequence_permutation_influence(
+            model=model,
+            x_seq=x_seq_scaled,
+            target_values=target_values,
+            feature_names=SEQ_COLS,
+            seed=seed,
+        )
+        method = "permutation_importance"
+        source_features = "seq_cols"
+    else:
+        items, method = _tabular_feature_influence(model_name, model, FEATURE_COLS, x_tabular_scaled_df)
+        source_features = "feature_cols"
+
+    return {
+        "target": target_name,
+        "model_name": model_name,
+        "method": method,
+        "source_features": source_features,
+        "items": items,
+    }
 
 
 def _save_model(model: Any, model_name: str, output_stem: str) -> str:
@@ -766,16 +906,37 @@ def train_and_save_artifacts(config: PipelineConfig = DEFAULT_CONFIG) -> dict[st
     )
     progress.update(1)
 
-    scoring_cols = list(set(FEATURE_COLS + SEQ_COLS + ["container_id", "machine_id", "time_window", "cpu_request", "cpu_limit", "mem_size"]))
+    feature_influence = {
+        "cpu": _model_feature_influence(
+            model_name=best_cpu_model_name,
+            model=final_cpu_model,
+            x_tabular_scaled_df=x_full_scaled_df,
+            x_seq_scaled=x_seq_full_scaled,
+            target_values=y_seq_cpu_full,
+            target_name="cpu_target",
+            seed=config.random_seed,
+        ),
+        "ram": _model_feature_influence(
+            model_name=best_ram_model_name,
+            model=final_ram_model,
+            x_tabular_scaled_df=x_full_scaled_df,
+            x_seq_scaled=x_seq_full_scaled,
+            target_values=y_seq_mem_full,
+            target_name="mem_target",
+            seed=config.random_seed + 1,
+        ),
+    }
+
+    scoring_cols = list(set(FEATURE_COLS + SEQ_COLS + ["app_du", "container_id", "machine_id", "time_window", "cpu_request", "cpu_limit", "mem_size"]))
     df_scoring = df_model[scoring_cols].copy()
     df_scoring = df_scoring.dropna(subset=list(set(FEATURE_COLS + SEQ_COLS))).copy()
-    df_scoring = df_scoring.sort_values(["container_id", "time_window"]).reset_index(drop=True)
+    df_scoring = df_scoring.sort_values(["app_du", "container_id", "time_window"]).reset_index(drop=True)
 
     latest_tabular_df = (
-        df_scoring.sort_values(["container_id", "time_window"])
-        .groupby("container_id", as_index=False)
+        df_scoring.sort_values(["app_du", "container_id", "time_window"])
+        .groupby(["app_du", "container_id"], as_index=False)
         .tail(1)
-        .sort_values(["container_id", "time_window"])
+        .sort_values(["app_du", "container_id", "time_window"])
         .copy()
     )
 
@@ -789,21 +950,21 @@ def train_and_save_artifacts(config: PipelineConfig = DEFAULT_CONFIG) -> dict[st
     latest_seq_x_scaled = sequence_scaler_full.transform(latest_seq_x.reshape(-1, latest_seq_x.shape[-1])).reshape(latest_seq_x.shape)
 
     if best_cpu_model_name == "LSTM":
-        cpu_pred_latest = latest_seq_rows[["container_id", "time_window"]].copy()
+        cpu_pred_latest = latest_seq_rows[REPORT_KEY_COLS].copy()
         cpu_pred_latest["predicted_cpu_percent"] = np.clip(final_cpu_model.predict(latest_seq_x_scaled, verbose=0).flatten(), 0, 100)
     else:
-        cpu_pred_latest = latest_tabular_df[["container_id", "time_window"]].copy()
+        cpu_pred_latest = latest_tabular_df[REPORT_KEY_COLS].copy()
         cpu_pred_latest["predicted_cpu_percent"] = np.clip(final_cpu_model.predict(x_latest_tabular_scaled_df), 0, 100)
 
     if best_ram_model_name == "LSTM":
-        ram_pred_latest = latest_seq_rows[["container_id", "time_window"]].copy()
+        ram_pred_latest = latest_seq_rows[REPORT_KEY_COLS].copy()
         ram_pred_latest["predicted_ram_percent"] = np.clip(final_ram_model.predict(latest_seq_x_scaled, verbose=0).flatten(), 0, 100)
     else:
-        ram_pred_latest = latest_tabular_df[["container_id", "time_window"]].copy()
+        ram_pred_latest = latest_tabular_df[REPORT_KEY_COLS].copy()
         ram_pred_latest["predicted_ram_percent"] = np.clip(final_ram_model.predict(x_latest_tabular_scaled_df), 0, 100)
 
-    report_base = latest_tabular_df[["container_id", "time_window", "cpu_request", "cpu_limit", "mem_size"]].copy()
-    report = report_base.merge(cpu_pred_latest, on=["container_id", "time_window"], how="left").merge(ram_pred_latest, on=["container_id", "time_window"], how="left")
+    report_base = latest_tabular_df[REPORT_KEY_COLS + ["machine_id", "cpu_request", "cpu_limit", "mem_size"]].copy()
+    report = report_base.merge(cpu_pred_latest, on=REPORT_KEY_COLS, how="left").merge(ram_pred_latest, on=REPORT_KEY_COLS, how="left")
     report = report.dropna(subset=["predicted_cpu_percent", "predicted_ram_percent"]).copy()
 
     report["predicted_cpu_absolute"] = (report["predicted_cpu_percent"] / 100.0) * report["cpu_limit"]
@@ -824,7 +985,9 @@ def train_and_save_artifacts(config: PipelineConfig = DEFAULT_CONFIG) -> dict[st
     report["decision_label"] = report["decision"].map(decision_label)
     report = report[
         [
+            "app_du",
             "container_id",
+            "machine_id",
             "time_window",
             "cpu_request",
             "cpu_limit",
@@ -860,10 +1023,14 @@ def train_and_save_artifacts(config: PipelineConfig = DEFAULT_CONFIG) -> dict[st
         "config": config.as_dict(),
         "feature_cols": FEATURE_COLS,
         "seq_cols": SEQ_COLS,
+        "entity_cols": ENTITY_COLS,
+        "report_key_cols": REPORT_KEY_COLS,
         "best_cpu_model_name": best_cpu_model_name,
         "best_ram_model_name": best_ram_model_name,
         "cpu_model_file": cpu_model_file,
         "ram_model_file": ram_model_file,
+        "feature_influence": feature_influence,
+        "feature_influence_version": 2,
         "tabular_scaler_file": TABULAR_SCALER_PATH.name,
         "sequence_scaler_file": SEQUENCE_SCALER_PATH.name,
         "metrics": _round_metrics(metrics_df),
@@ -934,6 +1101,7 @@ def build_request_window_frame(
         raise ValueError("После очистки входных метрик не осталось валидных наблюдений.")
 
     raw_df = usage_df.copy()
+    raw_df["app_du"] = str(meta_payload.get("app_du") or "unknown")
     raw_df["cpu_request"] = float(meta_payload["cpu_request"])
     raw_df["cpu_limit"] = float(meta_payload["cpu_limit"])
     raw_df["mem_size"] = float(meta_payload["mem_size"])
@@ -951,7 +1119,7 @@ def build_recommendation_response(
     config: PipelineConfig = DEFAULT_CONFIG,
 ) -> dict[str, Any]:
     request_window_df = build_request_window_frame(meta_payload, usage_payload, config=config)
-    feature_ready_df = request_window_df.dropna(subset=artifacts.feature_cols).sort_values("time_window").copy()
+    feature_ready_df = request_window_df.dropna(subset=artifacts.feature_cols).sort_values(["app_du", "container_id", "time_window"]).copy()
 
     if feature_ready_df.empty:
         raise ValueError(f"Недостаточно данных для формирования признаков. Нужно как минимум {config.lookback} полноценных окон.")
@@ -990,10 +1158,12 @@ def build_recommendation_response(
     cpu_action = generate_action(current_cpu_limit, recommended_cpu_limit, config.down_threshold, config.up_threshold)
     ram_action = generate_action(current_mem_size, recommended_mem_size, config.down_threshold, config.up_threshold)
     decision = combine_decision(cpu_action, ram_action)
+    app_du = str(meta_payload.get("app_du") or "unknown")
 
     response: dict[str, Any] = {
-        "request_id": f"{meta_payload['container_id']}-{int(latest_row['time_window'])}",
+        "request_id": f"{app_du}-{meta_payload['container_id']}-{int(latest_row['time_window'])}",
         "processed_at": datetime.now(timezone.utc).isoformat(),
+        "app_du": app_du,
         "container_id": meta_payload["container_id"],
         "machine_id": meta_payload["machine_id"],
         "time_window": {
@@ -1034,6 +1204,7 @@ def build_recommendation_response(
     if include_window_series:
         series_frame = feature_ready_df[
             [
+                "app_du",
                 "container_id",
                 "time_window",
                 "cpu_util_mean",
