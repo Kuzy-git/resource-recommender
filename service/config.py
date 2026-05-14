@@ -34,6 +34,13 @@ class PipelineConfig:
     model_version: str = "1.0.0"
     random_seed: int = 42
     service_name: str = "resource-recommender-service"
+    # Параметры дрейфа и переобучения
+    drift_threshold: float = 0.20  # Порог дрейфа признаков (20%)
+    ks_threshold: float = 0.10  # Порог KS-статистики
+    mae_increase_threshold: float = 0.15  # Порог увеличения MAE (15%)
+    r2_drop_threshold: float = 0.70  # Критический порог R²
+    retrain_interval_days: int = 7  # Интервал переобучения (дни)
+    samples_threshold: int = 1000  # Порог количества новых образцов
 
     def as_dict(self) -> dict[str, object]:
         data = asdict(self)

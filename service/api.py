@@ -679,6 +679,7 @@ NAV_ITEMS = [
     ("/recommendation", "Рекомендации"),
     ("/model-info", "Модель"),
     ("/recommendations/history", "История"),
+    ("/drift-status", "Дрейф"),
     ("/data", "Данные"),
     ("/docs", "Swagger"),
 ]
@@ -1564,6 +1565,23 @@ def recommendations_history(
     if wants_html(request, format):
         return HTMLResponse(render_history_page(service, limit=limit, container_id=container_id))
     return service.history(limit=limit, container_id=container_id)
+
+
+@app.get("/drift-status")
+def drift_status(
+    current_window_count: int = Query(default=500, ge=1, le=10000),
+    reference_window_count: int = Query(default=5000, ge=1, le=100000),
+    samples_since_retrain: int | None = Query(default=None, ge=0),
+) -> dict[str, Any]:
+    service = get_service(app)
+    try:
+        return service.drift_status(
+            current_window_count=current_window_count,
+            reference_window_count=reference_window_count,
+            samples_since_retrain=samples_since_retrain,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.get("/data", response_model=None)

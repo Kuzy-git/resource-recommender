@@ -155,6 +155,231 @@ class LoadedArtifacts:
         return list(self.metadata["seq_cols"])
 
 
+@dataclass
+class DriftMetrics:
+    feature_drift_count: int
+    feature_drift_score: float
+    drifted_features: list[str]
+    ks_stats: dict[str, float]
+    should_retrain: bool
+    retrain_reasons: list[str]
+    timestamp: datetime
+    samples_count: int
+    target_drift_detected: bool = False
+    target_drift_score: float = 0.0
+
+
+def _numeric_values(frame: pd.DataFrame, column: str) -> np.ndarray:
+    if column not in frame.columns:
+        return np.array([], dtype=float)
+
+    values = pd.to_numeric(frame[column], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    return values.to_numpy(dtype=float)
+
+
+def _ks_statistic(reference_values: np.ndarray, current_values: np.ndarray) -> float:
+    if reference_values.size == 0 or current_values.size == 0:
+        return 0.0
+
+    reference_sorted = np.sort(reference_values)
+    current_sorted = np.sort(current_values)
+    combined = np.sort(np.concatenate([reference_sorted, current_sorted]))
+    reference_cdf = np.searchsorted(reference_sorted, combined, side="right") / reference_sorted.size
+    current_cdf = np.searchsorted(current_sorted, combined, side="right") / current_sorted.size
+    return float(np.max(np.abs(reference_cdf - current_cdf)))
+
+
+def detect_feature_drift(
+    current_data: pd.DataFrame,
+    reference_data: pd.DataFrame,
+    feature_cols: list[str] | None = None,
+    drift_threshold: float = 0.2,
+    ks_threshold: float = 0.1,
+    min_drifted_features: int = 3,
+) -> DriftMetrics:
+    feature_names = feature_cols or FEATURE_COLS
+    drifted_features: list[str] = []
+    drift_scores: list[float] = []
+    ks_stats: dict[str, float] = {}
+
+    for feature_name in feature_names:
+        reference_values = _numeric_values(reference_data, feature_name)
+        current_values = _numeric_values(current_data, feature_name)
+        if reference_values.size == 0 or current_values.size == 0:
+            continue
+
+        reference_mean = float(np.mean(reference_values))
+        current_mean = float(np.mean(current_values))
+        reference_std = float(np.std(reference_values, ddof=1)) if reference_values.size > 1 else 0.0
+        current_std = float(np.std(current_values, ddof=1)) if current_values.size > 1 else 0.0
+
+        mean_drift = abs(current_mean - reference_mean) / max(abs(reference_mean), 1e-10)
+        std_drift = abs(current_std - reference_std) / max(abs(reference_std), 1e-10)
+        ks_stat = _ks_statistic(reference_values, current_values)
+        ks_stats[feature_name] = ks_stat
+
+        feature_score = max(mean_drift, std_drift, ks_stat)
+        if mean_drift > drift_threshold or std_drift > drift_threshold or ks_stat > ks_threshold:
+            drifted_features.append(feature_name)
+            drift_scores.append(float(min(feature_score * 100.0, 100.0)))
+
+    feature_drift_score = float(np.mean(drift_scores)) if drift_scores else 0.0
+    should_retrain = len(drifted_features) >= min_drifted_features
+    retrain_reasons = []
+    if should_retrain:
+        preview = ", ".join(drifted_features[:5])
+        retrain_reasons.append(f"Data drift detected in {len(drifted_features)} features: {preview}")
+
+    return DriftMetrics(
+        feature_drift_count=len(drifted_features),
+        feature_drift_score=feature_drift_score,
+        drifted_features=drifted_features,
+        ks_stats=ks_stats,
+        should_retrain=should_retrain,
+        retrain_reasons=retrain_reasons,
+        timestamp=datetime.now(timezone.utc),
+        samples_count=int(len(current_data)),
+    )
+
+
+def detect_target_drift(
+    current_predictions: np.ndarray,
+    current_actuals: np.ndarray,
+    historical_mae: float,
+    historical_r2: float,
+    mae_increase_threshold: float = 0.15,
+    r2_drop_threshold: float = 0.7,
+) -> tuple[bool, float, list[str]]:
+    predictions = np.asarray(current_predictions, dtype=float)
+    actuals = np.asarray(current_actuals, dtype=float)
+    sample_count = min(predictions.size, actuals.size)
+    predictions = predictions[:sample_count]
+    actuals = actuals[:sample_count]
+    valid_mask = np.isfinite(predictions) & np.isfinite(actuals)
+    predictions = predictions[valid_mask]
+    actuals = actuals[valid_mask]
+    if predictions.size == 0 or actuals.size == 0:
+        return False, 0.0, []
+
+    current_mae = float(mean_absolute_error(actuals, predictions))
+    current_r2 = float(r2_score(actuals, predictions))
+    drift_detected = False
+    drift_score = 0.0
+    reasons: list[str] = []
+
+    mae_increase = (current_mae - historical_mae) / max(abs(historical_mae), 1e-10)
+    if mae_increase > mae_increase_threshold:
+        drift_detected = True
+        drift_score = max(drift_score, min(mae_increase * 100.0, 100.0))
+        reasons.append(f"MAE increased by {mae_increase * 100.0:.1f}%")
+
+    if current_r2 < r2_drop_threshold:
+        drift_detected = True
+        r2_drop = r2_drop_threshold - current_r2
+        drift_score = max(drift_score, min(max(r2_drop, 0.0) * 100.0, 100.0))
+        reasons.append(f"R2 dropped to {current_r2:.3f}")
+
+    return drift_detected, float(drift_score), reasons
+
+
+def check_retraining_triggers(
+    current_data: pd.DataFrame,
+    reference_data: pd.DataFrame,
+    feature_cols: list[str] | None = None,
+    last_retrain_time: datetime | None = None,
+    samples_since_retrain: int = 0,
+    current_predictions: np.ndarray | None = None,
+    current_actuals: np.ndarray | None = None,
+    historical_mae: float | None = None,
+    historical_r2: float | None = None,
+    retrain_interval_days: int = 7,
+    sample_threshold: int = 1000,
+) -> tuple[bool, list[str], dict[str, Any]]:
+    now = datetime.now(timezone.utc)
+    reasons: list[str] = []
+    metrics: dict[str, Any] = {}
+    should_retrain = False
+
+    if last_retrain_time is not None:
+        if last_retrain_time.tzinfo is None:
+            last_retrain_time = last_retrain_time.replace(tzinfo=timezone.utc)
+        days_since_retrain = (now - last_retrain_time).days
+        metrics["days_since_retrain"] = days_since_retrain
+        if days_since_retrain >= retrain_interval_days:
+            should_retrain = True
+            reasons.append(f"{days_since_retrain} days passed since the last retraining")
+    else:
+        metrics["days_since_retrain"] = None
+
+    metrics["samples_since_retrain"] = int(samples_since_retrain)
+    if samples_since_retrain >= sample_threshold:
+        should_retrain = True
+        reasons.append(f"{samples_since_retrain} new samples received, threshold is {sample_threshold}")
+
+    drift_metrics = detect_feature_drift(current_data, reference_data, feature_cols)
+    metrics["drift_metrics"] = {
+        "feature_drift_count": drift_metrics.feature_drift_count,
+        "feature_drift_score": drift_metrics.feature_drift_score,
+        "drifted_features": drift_metrics.drifted_features,
+        "ks_stats": drift_metrics.ks_stats,
+    }
+    if drift_metrics.should_retrain:
+        should_retrain = True
+        reasons.extend(drift_metrics.retrain_reasons)
+
+    if (
+        current_predictions is not None
+        and current_actuals is not None
+        and historical_mae is not None
+        and historical_r2 is not None
+    ):
+        target_drift, target_score, target_reasons = detect_target_drift(
+            current_predictions=current_predictions,
+            current_actuals=current_actuals,
+            historical_mae=historical_mae,
+            historical_r2=historical_r2,
+        )
+        metrics["target_drift"] = {
+            "detected": target_drift,
+            "score": target_score,
+            "reasons": target_reasons,
+        }
+        if target_drift:
+            should_retrain = True
+            reasons.extend(target_reasons)
+
+    return should_retrain, reasons, metrics
+
+
+def calculate_prediction_error(
+    predictions: np.ndarray,
+    actuals: np.ndarray,
+    error_metric: str = "mae",
+) -> float:
+    predictions_array = np.asarray(predictions, dtype=float)
+    actuals_array = np.asarray(actuals, dtype=float)
+    sample_count = min(predictions_array.size, actuals_array.size)
+    predictions_array = predictions_array[:sample_count]
+    actuals_array = actuals_array[:sample_count]
+    valid_mask = np.isfinite(predictions_array) & np.isfinite(actuals_array)
+    predictions_array = predictions_array[valid_mask]
+    actuals_array = actuals_array[valid_mask]
+    if predictions_array.size == 0:
+        return 0.0
+
+    if error_metric == "mae":
+        return float(mean_absolute_error(actuals_array, predictions_array))
+    if error_metric == "mape":
+        non_zero_mask = actuals_array != 0
+        if not np.any(non_zero_mask):
+            return 0.0
+        return float(np.mean(np.abs((actuals_array[non_zero_mask] - predictions_array[non_zero_mask]) / actuals_array[non_zero_mask])) * 100.0)
+    if error_metric == "rmse":
+        return float(np.sqrt(np.mean((actuals_array - predictions_array) ** 2)))
+
+    raise ValueError(f"Unknown error metric: {error_metric}")
+
+
 def _native_value(value: Any) -> Any:
     if isinstance(value, (np.integer,)):
         return int(value)

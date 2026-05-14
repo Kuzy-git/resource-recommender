@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from service.config import DEFAULT_CONFIG, HISTORY_PATH, PipelineConfig
@@ -7,6 +8,7 @@ from service.history import RecommendationHistoryStore
 from service.ml_pipeline import (
     LoadedArtifacts,
     build_recommendation_response,
+    check_retraining_triggers,
     dataframe_to_records,
     load_artifacts,
 )
@@ -85,6 +87,78 @@ class RecommendationService:
         return {
             "items": self.history_store.read(limit=limit, container_id=container_id),
             "count": self.history_store.count(),
+        }
+
+    def drift_status(
+        self,
+        current_window_count: int = 500,
+        reference_window_count: int = 5000,
+        samples_since_retrain: int | None = None,
+    ) -> dict[str, Any]:
+        window_df = self.artifacts.window_df.copy()
+        if window_df.empty:
+            raise ValueError("Нет данных для проверки дрейфа.")
+
+        sort_cols = [column for column in ["time_window", "app_du", "container_id"] if column in window_df.columns]
+        if sort_cols:
+            window_df = window_df.sort_values(sort_cols).reset_index(drop=True)
+
+        current_count = min(max(current_window_count, 1), len(window_df))
+        current_data = window_df.tail(current_count).copy()
+
+        reference_pool = window_df.iloc[: max(len(window_df) - current_count, 0)].copy()
+        if reference_pool.empty:
+            reference_pool = window_df.copy()
+        reference_count = min(max(reference_window_count, 1), len(reference_pool))
+        reference_data = reference_pool.tail(reference_count).copy()
+
+        feature_cols = [
+            column
+            for column in self.artifacts.feature_cols
+            if column in current_data.columns and column in reference_data.columns
+        ]
+        if not feature_cols:
+            raise ValueError("Нет общих признаков для проверки дрейфа.")
+
+        trained_at_raw = str(self.artifacts.metadata.get("trained_at", ""))
+        try:
+            last_retrain_time = datetime.fromisoformat(trained_at_raw)
+        except ValueError:
+            last_retrain_time = datetime.now(timezone.utc)
+
+        if last_retrain_time.tzinfo is None:
+            last_retrain_time = last_retrain_time.replace(tzinfo=timezone.utc)
+
+        sample_count = samples_since_retrain if samples_since_retrain is not None else len(current_data)
+        should_retrain, reasons, metrics = check_retraining_triggers(
+            current_data=current_data,
+            reference_data=reference_data,
+            feature_cols=feature_cols,
+            last_retrain_time=last_retrain_time,
+            samples_since_retrain=sample_count,
+            retrain_interval_days=self.config.retrain_interval_days,
+            sample_threshold=self.config.samples_threshold,
+        )
+
+        return {
+            "status": "retrain_recommended" if should_retrain else "ok",
+            "should_retrain": should_retrain,
+            "retrain_reasons": reasons,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "data_window": {
+                "current_rows": int(len(current_data)),
+                "reference_rows": int(len(reference_data)),
+                "current_window_count": int(current_count),
+                "reference_window_count": int(reference_count),
+            },
+            "thresholds": {
+                "drift_threshold": self.config.drift_threshold,
+                "ks_threshold": self.config.ks_threshold,
+                "retrain_interval_days": self.config.retrain_interval_days,
+                "samples_threshold": self.config.samples_threshold,
+            },
+            "feature_cols": feature_cols,
+            "metrics": metrics,
         }
 
     def data_overview(self, container_id: str | None = None, app_du: str | None = None, limit: int = 200) -> dict[str, Any]:
