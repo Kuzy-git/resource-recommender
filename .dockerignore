@@ -5,3 +5,5 @@ __pycache__/
 .git/
 .venv/
 .pytest_cache/
+container_meta.csv
+container_usage.csv

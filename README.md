@@ -53,25 +53,31 @@ JSON-ответ вместо HTML:
 http://127.0.0.1:8000/data?format=json
 ```
 
-## Запуск через Docker
 
-Собрать образ:
+## Запуск через Docker Compose
 
-```powershell
-docker build -t resource-recommender .
-```
-
-Запустить контейнер:
+Соберите и запустите сервис с монтированием локальных данных и артефактов:
 
 ```powershell
-docker run --rm -p 8000:8000 resource-recommender
+docker compose up --build
 ```
 
-Запустить с принудительным переобучением:
+Остановка сервиса:
 
 ```powershell
-docker run --rm -p 8000:8000 -e FORCE_RETRAIN=1 resource-recommender
+docker compose down
 ```
+
+Если нужно запустить с принудительным переобучением:
+
+```powershell
+docker compose run --rm -e FORCE_RETRAIN=1 recommender
+```
+
+После запуска доступно:
+
+- `http://localhost:8000/docs` — Swagger UI
+- `http://localhost:8000/data` — графики и таблицы
 
 ## Полезные команды
 
