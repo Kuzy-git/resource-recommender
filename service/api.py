@@ -1483,7 +1483,85 @@ def render_recommendation_help_page(service: RecommendationService) -> str:
     ])}
 
     <section class="section">
-      <h2>Описание</h2>
+      <h2>Форма для получения рекомендации</h2>
+      <p>Заполните данные контейнера и метрики использования, чтобы получить рекомендацию по CPU и памяти.</p>
+      
+      <div style="background: var(--surface-alt); padding: 20px; border-radius: 8px; margin-top: 16px;">
+        <h3 style="margin-top: 0;">Метаданные контейнера</h3>
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 16px;">
+          <div>
+            <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">Container ID</label>
+            <input type="text" id="meta_container_id" value="demo-container" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 14px;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">Machine ID</label>
+            <input type="text" id="meta_machine_id" value="demo-machine" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 14px;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">App DU</label>
+            <input type="text" id="meta_app_du" value="demo-app" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 14px;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">Status</label>
+            <input type="text" id="meta_status" value="started" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 14px;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">CPU Request (m)</label>
+            <input type="number" id="meta_cpu_request" value="400" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 14px;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">CPU Limit (m)</label>
+            <input type="number" id="meta_cpu_limit" value="800" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 14px;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">Memory Size (Gi)</label>
+            <input type="number" id="meta_mem_size" value="3.13" step="0.01" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 14px;">
+          </div>
+        </div>
+
+        <h3>Метрики использования</h3>
+        <div id="usage_rows_container" style="margin-bottom: 12px;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; margin-bottom: 8px;">
+            <div>
+              <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px;">Time Stamp</label>
+              <input type="number" class="usage_time_stamp" value="0" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px;">
+            </div>
+            <div>
+              <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px;">CPU %</label>
+              <input type="number" class="usage_cpu_util_percent" value="20" min="0" max="100" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px;">
+            </div>
+            <div>
+              <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px;">RAM %</label>
+              <input type="number" class="usage_mem_util_percent" value="45" min="0" max="100" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px;">
+            </div>
+            <div style="padding-top: 26px;">
+              <button class="usage_remove_btn" onclick="removeUsageRow(this)" style="padding: 8px 12px; background: #f2f5f3; border: 1px solid var(--line); border-radius: 4px; cursor: pointer; font-size: 13px;">−</button>
+            </div>
+          </div>
+        </div>
+        <button onclick="addUsageRow()" style="padding: 8px 12px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; margin-bottom: 16px;">+ Добавить строку метрики</button>
+
+        <div style="margin-bottom: 16px;">
+          <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="include_features" checked>
+            <span>Включить признаки в ответ</span>
+          </label>
+        </div>
+        <div style="margin-bottom: 16px;">
+          <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="include_window_series" checked>
+            <span>Включить временные ряды в ответ</span>
+          </label>
+        </div>
+
+        <button onclick="sendRecommendationRequest()" style="padding: 12px 24px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 15px;">Получить рекомендацию</button>
+      </div>
+
+      <div id="response_container"></div>
+    </section>
+
+    <section class="section">
+      <h2>Описание API</h2>
       <p>
         Эндпоинт рассчитывает прогноз CPU и RAM по окну метрик контейнера
         и возвращает итоговую рекомендацию.
@@ -1497,12 +1575,245 @@ def render_recommendation_help_page(service: RecommendationService) -> str:
       <h2>Пример тела запроса</h2>
       <div class="console"><pre>{escape(json.dumps(sample_payload, ensure_ascii=False, indent=2))}</pre></div>
     </section>
+
+    <script>
+    function addUsageRow() {{
+      const container = document.getElementById('usage_rows_container');
+      const lastRow = container.lastElementChild;
+      let lastTimeStamp = 0;
+      
+      if (lastRow) {{
+        const inputs = lastRow.querySelectorAll('input');
+        lastTimeStamp = parseInt(inputs[0].value) + 600;
+      }}
+      
+      const newRow = document.createElement('div');
+      newRow.style.cssText = 'display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; margin-bottom: 8px;';
+      newRow.innerHTML = `
+        <input type="number" class="usage_time_stamp" value="${{lastTimeStamp}}" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px;">
+        <input type="number" class="usage_cpu_util_percent" value="25" min="0" max="100" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px;">
+        <input type="number" class="usage_mem_util_percent" value="50" min="0" max="100" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px;">
+        <button onclick="removeUsageRow(this)" style="padding: 8px 12px; background: #f2f5f3; border: 1px solid var(--line); border-radius: 4px; cursor: pointer; font-size: 13px;">−</button>
+      `;
+      container.appendChild(newRow);
+    }}
+
+    function removeUsageRow(btn) {{
+      const container = document.getElementById('usage_rows_container');
+      if (container.children.length > 1) {{
+        btn.parentElement.remove();
+      }} else {{
+        alert('Должна быть хотя бы одна строка метрики');
+      }}
+    }}
+
+    function sendRecommendationRequest() {{
+      const meta = {{
+        container_id: document.getElementById('meta_container_id').value,
+        machine_id: document.getElementById('meta_machine_id').value,
+        app_du: document.getElementById('meta_app_du').value,
+        status: document.getElementById('meta_status').value,
+        cpu_request: parseInt(document.getElementById('meta_cpu_request').value),
+        cpu_limit: parseInt(document.getElementById('meta_cpu_limit').value),
+        mem_size: parseFloat(document.getElementById('meta_mem_size').value),
+      }};
+
+      const usageRows = document.querySelectorAll('#usage_rows_container > div');
+      const usage = Array.from(usageRows).map(row => {{
+        const inputs = row.querySelectorAll('input');
+        return {{
+          time_stamp: parseInt(inputs[0].value),
+          cpu_util_percent: parseInt(inputs[1].value),
+          mem_util_percent: parseInt(inputs[2].value),
+        }};
+      }});
+
+      const payload = {{
+        meta: meta,
+        usage: usage,
+        include_features: document.getElementById('include_features').checked,
+        include_window_series: document.getElementById('include_window_series').checked,
+      }};
+
+      const responseContainer = document.getElementById('response_container');
+      responseContainer.innerHTML = '<div style="padding: 16px; background: var(--surface-alt); border-radius: 8px; margin-top: 16px;"><p style="color: var(--muted); margin: 0;">Отправляю запрос...</p></div>';
+
+      fetch('/recommendation', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify(payload),
+      }})
+      .then(response => {{
+        if (!response.ok) {{
+          return response.json().then(error => {{
+            throw new Error(error.detail || 'Ошибка сервера');
+          }});
+        }}
+        return response.json();
+      }})
+      .then(data => {{
+        displayRecommendationResult(data);
+      }})
+      .catch(error => {{
+        responseContainer.innerHTML = `<div style="padding: 16px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; margin-top: 16px; color: #856404;"><strong>Ошибка:</strong> ${{error.message}}</div>`;
+      }});
+    }}
+
+    function displayRecommendationResult(data) {{
+      const container = document.getElementById('response_container');
+      
+      let html = '<div style="margin-top: 16px;">';
+      html += '<h3 style="margin-top: 0; color: var(--accent-strong);">✓ Рекомендация получена</h3>';
+      
+      const pred = data.prediction || {{}};
+      const rec = data.recommendation || {{}};
+      
+      html += '<div style="background: var(--surface); border: 2px solid var(--accent); border-radius: 8px; padding: 16px; margin-bottom: 16px;">';
+      html += '<h4 style="margin-top: 0; margin-bottom: 12px;">Результат:</h4>';
+      html += '<div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">';
+      
+      if (pred.cpu_percent !== undefined) {{
+        html += `<div style="padding: 12px; background: var(--surface-alt); border-radius: 6px;">
+          <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">Прогноз CPU</div>
+          <div style="font-size: 20px; font-weight: 700; color: var(--accent-strong);">${{(pred.cpu_percent).toFixed(2)}}%</div>
+        </div>`;
+      }}
+      
+      if (pred.cpu_absolute !== undefined) {{
+        html += `<div style="padding: 12px; background: var(--surface-alt); border-radius: 6px;">
+          <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">Прогноз CPU (абс.)</div>
+          <div style="font-size: 20px; font-weight: 700; color: var(--accent-strong);">${{(pred.cpu_absolute).toFixed(1)}} m</div>
+        </div>`;
+      }}
+      
+      if (rec.cpu_limit !== undefined) {{
+        html += `<div style="padding: 12px; background: var(--accent-soft); border-radius: 6px; border-left: 4px solid var(--accent);">
+          <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">Рекомендуемый CPU Limit</div>
+          <div style="font-size: 20px; font-weight: 700; color: var(--accent-strong);">${{(rec.cpu_limit).toFixed(1)}} m</div>
+        </div>`;
+      }}
+      
+      if (pred.ram_percent !== undefined) {{
+        html += `<div style="padding: 12px; background: var(--surface-alt); border-radius: 6px;">
+          <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">Прогноз RAM</div>
+          <div style="font-size: 20px; font-weight: 700; color: var(--accent-strong);">${{(pred.ram_percent).toFixed(2)}}%</div>
+        </div>`;
+      }}
+      
+      if (rec.mem_size !== undefined) {{
+        html += `<div style="padding: 12px; background: var(--accent-soft); border-radius: 6px; border-left: 4px solid var(--accent);">
+          <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">Рекомендуемый размер памяти</div>
+          <div style="font-size: 20px; font-weight: 700; color: var(--accent-strong);">${{(rec.mem_size).toFixed(3)}} Gi</div>
+        </div>`;
+      }}
+      
+      html += '</div></div>';
+      
+      if (data.actions) {{
+        html += '<div style="background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px;">';
+        html += '<h4 style="margin-top: 0; margin-bottom: 12px;">Рекомендуемые действия:</h4>';
+        
+        let actionColor = '#1f7a5c';
+        let actionText = data.actions.cpu || 'OK';
+        if (actionText === 'UPSCALE') actionColor = '#c46c2a';
+        if (actionText === 'DOWNSCALE') actionColor = '#2f6f8f';
+        
+        html += `<div style="padding: 12px; background: var(--surface-alt); border-left: 4px solid ${{actionColor}}; border-radius: 6px; margin-bottom: 8px;">
+          <div style="font-size: 13px; color: var(--muted);">CPU действие</div>
+          <div style="font-size: 18px; font-weight: 700; color: ${{actionColor}};">${{actionText}}</div>
+        </div>`;
+        
+        actionColor = '#1f7a5c';
+        actionText = data.actions.ram || 'OK';
+        if (actionText === 'UPSCALE') actionColor = '#c46c2a';
+        if (actionText === 'DOWNSCALE') actionColor = '#2f6f8f';
+        
+        html += `<div style="padding: 12px; background: var(--surface-alt); border-left: 4px solid ${{actionColor}}; border-radius: 6px;">
+          <div style="font-size: 13px; color: var(--muted);">RAM действие</div>
+          <div style="font-size: 18px; font-weight: 700; color: ${{actionColor}};">${{actionText}}</div>
+        </div>`;
+        
+        html += '</div>';
+      }}
+      
+      if (data.features && Object.keys(data.features).length > 0) {{
+        html += '<details style="background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 16px;">';
+        html += '<summary style="cursor: pointer; font-weight: 600;">Признаки (расширить)</summary>';
+        html += '<div style="margin-top: 12px;">';
+        
+        for (const [key, value] of Object.entries(data.features).slice(0, 20)) {{
+          html += `<div style="padding: 8px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 200px 1fr;">
+            <strong style="font-size: 13px;">${{key}}</strong>
+            <span style="font-family: monospace; font-size: 13px; color: var(--muted);">${{(typeof value === 'number') ? value.toFixed(4) : value}}</span>
+          </div>`;
+        }}
+        
+        html += '</div></details>';
+      }}
+
+      if (Array.isArray(data.window_series) && data.window_series.length > 0) {{
+        const columns = [
+          'time_window',
+          'cpu_util_mean',
+          'cpu_util_max',
+          'mem_util_mean',
+          'mem_util_max',
+          'cpu_request',
+          'cpu_limit',
+          'mem_size',
+          'samples_in_window',
+        ];
+
+        html += '<details open style="background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 16px;">';
+        html += '<summary style="cursor: pointer; font-weight: 600;">Временной ряд</summary>';
+        html += '<div style="overflow-x: auto; margin-top: 12px;">';
+        html += '<table style="width: 100%; border-collapse: collapse; min-width: 760px; font-size: 13px;">';
+        html += '<thead><tr>';
+        columns.forEach(column => {{
+          html += `<th style="text-align: left; padding: 8px; border-bottom: 1px solid var(--line); color: var(--muted);">${{column}}</th>`;
+        }});
+        html += '</tr></thead><tbody>';
+
+        data.window_series.forEach(row => {{
+          html += '<tr>';
+          columns.forEach(column => {{
+            const value = row[column];
+            const formatted = (typeof value === 'number') ? Number(value.toFixed(4)).toString() : (value ?? '');
+            html += `<td style="padding: 8px; border-bottom: 1px solid var(--line); font-family: monospace;">${{formatted}}</td>`;
+          }});
+          html += '</tr>';
+        }});
+
+        html += '</tbody></table></div></details>';
+      }}
+      
+      html += '</div>';
+      container.innerHTML = html;
+    }}
+
+    // Инициализация - добавляем остальные строки из примера
+    window.addEventListener('load', function() {{
+      const timestamps = [600, 1200, 1800, 2400, 3000, 3600, 4200];
+      const cpuValues = [25, 22, 30, 28, 35, 40, 38];
+      const memValues = [47, 50, 52, 49, 53, 55, 58];
+      
+      for (let i = 0; i < timestamps.length; i++) {{
+        addUsageRow();
+        const rows = document.querySelectorAll('#usage_rows_container > div');
+        const lastRow = rows[rows.length - 1];
+        const inputs = lastRow.querySelectorAll('input');
+        inputs[0].value = timestamps[i];
+        inputs[1].value = cpuValues[i];
+        inputs[2].value = memValues[i];
+      }}
+    }});
+    </script>
     """
 
     return render_layout(
         service=service,
         title="Эндпоинт рекомендаций",
-        subtitle="POST /recommendation",
+        subtitle="POST /recommendation — получить рекомендацию по ресурсам",
         body_html=body,
         active_path="/recommendation",
     )
