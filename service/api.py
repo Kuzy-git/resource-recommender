@@ -1554,6 +1554,11 @@ def render_recommendation_help_page(service: RecommendationService) -> str:
           </label>
         </div>
 
+        <div style="margin-bottom: 20px; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;">
+          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px;">Или загрузите данные из JSON файла:</label>
+          <input type="file" id="file_upload" accept=".json" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px;">
+        </div>
+
         <button onclick="sendRecommendationRequest()" style="padding: 12px 24px; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 15px;">Получить рекомендацию</button>
       </div>
 
@@ -1670,8 +1675,9 @@ def render_recommendation_help_page(service: RecommendationService) -> str:
       
       html += '<div style="background: var(--surface); border: 2px solid var(--accent); border-radius: 8px; padding: 16px; margin-bottom: 16px;">';
       html += '<h4 style="margin-top: 0; margin-bottom: 12px;">Результат:</h4>';
-      html += '<div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">';
       
+      // CPU прогноз - две колонки
+      html += '<div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 12px;">';
       if (pred.cpu_percent !== undefined) {{
         html += `<div style="padding: 12px; background: var(--surface-alt); border-radius: 6px;">
           <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">Прогноз CPU</div>
@@ -1685,14 +1691,18 @@ def render_recommendation_help_page(service: RecommendationService) -> str:
           <div style="font-size: 20px; font-weight: 700; color: var(--accent-strong);">${{(pred.cpu_absolute).toFixed(1)}} m</div>
         </div>`;
       }}
+      html += '</div>';
       
+      // CPU рекомендация - полная ширина
       if (rec.cpu_limit !== undefined) {{
-        html += `<div style="padding: 12px; background: var(--accent-soft); border-radius: 6px; border-left: 4px solid var(--accent);">
+        html += `<div style="padding: 12px; background: var(--accent-soft); border-radius: 6px; border-left: 4px solid var(--accent); margin-bottom: 12px;">
           <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">Рекомендуемый CPU Limit</div>
           <div style="font-size: 20px; font-weight: 700; color: var(--accent-strong);">${{(rec.cpu_limit).toFixed(1)}} m</div>
         </div>`;
       }}
       
+      // RAM прогноз - две колонки
+      html += '<div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 12px;">';
       if (pred.ram_percent !== undefined) {{
         html += `<div style="padding: 12px; background: var(--surface-alt); border-radius: 6px;">
           <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">Прогноз RAM</div>
@@ -1700,6 +1710,15 @@ def render_recommendation_help_page(service: RecommendationService) -> str:
         </div>`;
       }}
       
+      if (pred.ram_absolute !== undefined) {{
+        html += `<div style="padding: 12px; background: var(--surface-alt); border-radius: 6px;">
+          <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">Прогноз RAM (абс.)</div>
+          <div style="font-size: 20px; font-weight: 700; color: var(--accent-strong);">${{(pred.ram_absolute).toFixed(3)}} Gi</div>
+        </div>`;
+      }}
+      html += '</div>';
+      
+      // RAM рекомендация - полная ширина
       if (rec.mem_size !== undefined) {{
         html += `<div style="padding: 12px; background: var(--accent-soft); border-radius: 6px; border-left: 4px solid var(--accent);">
           <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">Рекомендуемый размер памяти</div>
@@ -1707,7 +1726,7 @@ def render_recommendation_help_page(service: RecommendationService) -> str:
         </div>`;
       }}
       
-      html += '</div></div>';
+      html += '</div>';
       
       if (data.actions) {{
         html += '<div style="background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px;">';
@@ -1806,7 +1825,67 @@ def render_recommendation_help_page(service: RecommendationService) -> str:
         inputs[1].value = cpuValues[i];
         inputs[2].value = memValues[i];
       }}
+
+      // Обработчик загрузки файла
+      const fileInput = document.getElementById('file_upload');
+      fileInput.addEventListener('change', function(e) {{
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        const reader = new FileReader();
+        reader.onload = function(event) {{
+          try {{
+            const data = JSON.parse(event.target.result);
+            loadDataFromFile(data);
+          }} catch (error) {{
+            alert('Ошибка при чтении файла: ' + error.message);
+          }}
+        }};
+        reader.readAsText(file);
+      }});
     }});
+
+    function loadDataFromFile(data) {{
+      if (!data.meta || !data.usage) {{
+        alert('Неверный формат файла. Необходимы поля "meta" и "usage".');
+        return;
+      }}
+
+      const meta = data.meta;
+      document.getElementById('meta_container_id').value = meta.container_id || '';
+      document.getElementById('meta_machine_id').value = meta.machine_id || '';
+      document.getElementById('meta_app_du').value = meta.app_du || '';
+      document.getElementById('meta_status').value = meta.status || 'started';
+      document.getElementById('meta_cpu_request').value = meta.cpu_request || '';
+      document.getElementById('meta_cpu_limit').value = meta.cpu_limit || '';
+      document.getElementById('meta_mem_size').value = meta.mem_size || '';
+
+      // Очищаем строки метрик
+      const container = document.getElementById('usage_rows_container');
+      container.innerHTML = '';
+
+      // Добавляем строки метрик из файла
+      data.usage.forEach(usage => {{
+        const newRow = document.createElement('div');
+        newRow.style.cssText = 'display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; margin-bottom: 8px;';
+        newRow.innerHTML = `
+          <input type="number" class="usage_time_stamp" value="${{usage.time_stamp || 0}}" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px;">
+          <input type="number" class="usage_cpu_util_percent" value="${{usage.cpu_util_percent || 0}}" min="0" max="100" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px;">
+          <input type="number" class="usage_mem_util_percent" value="${{usage.mem_util_percent || 0}}" min="0" max="100" style="width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 13px;">
+          <button onclick="removeUsageRow(this)" style="padding: 8px 12px; background: #f2f5f3; border: 1px solid var(--line); border-radius: 4px; cursor: pointer; font-size: 13px;">−</button>
+        `;
+        container.appendChild(newRow);
+      }});
+
+      if (data.include_features !== undefined) {{
+        document.getElementById('include_features').checked = data.include_features;
+      }}
+      if (data.include_window_series !== undefined) {{
+        document.getElementById('include_window_series').checked = data.include_window_series;
+      }}
+
+      alert('Данные успешно загружены из файла!');
+    }}
     </script>
     """
 
